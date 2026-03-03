@@ -2,6 +2,7 @@ import makeWASocket, {
     useMultiFileAuthState,
     DisconnectReason,
     fetchLatestBaileysVersion,
+    downloadMediaMessage,
     WASocket,
     BaileysEventMap,
 } from "@whiskeysockets/baileys";
@@ -148,9 +149,10 @@ export async function startSession(userId: string): Promise<SessionInfo> {
             // Only handle individual chats (not groups)
             if (from.endsWith("@g.us")) continue;
 
-            // Extract text body from various message types
+            // Extract text body and detect message type
             let messageBody = "";
             let messageType: "text" | "image" | "video" | "document" | "audio" | "other" = "other";
+            let imageBase64: string | undefined;
 
             if (msg.message.conversation) {
                 messageBody = msg.message.conversation;
@@ -158,9 +160,16 @@ export async function startSession(userId: string): Promise<SessionInfo> {
             } else if (msg.message.extendedTextMessage?.text) {
                 messageBody = msg.message.extendedTextMessage.text;
                 messageType = "text";
-            } else if (msg.message.imageMessage?.caption) {
-                messageBody = msg.message.imageMessage.caption;
+            } else if (msg.message.imageMessage) {
+                // Image message — download and base64-encode regardless of caption
+                messageBody = msg.message.imageMessage.caption || "";
                 messageType = "image";
+                try {
+                    const buffer = await downloadMediaMessage(msg, "buffer", {}) as Buffer;
+                    imageBase64 = buffer.toString("base64");
+                } catch (err) {
+                    console.error(`Image download error for ${userId}:`, err);
+                }
             } else if (msg.message.videoMessage?.caption) {
                 messageBody = msg.message.videoMessage.caption;
                 messageType = "video";
@@ -175,21 +184,27 @@ export async function startSession(userId: string): Promise<SessionInfo> {
                 messageType = "other";
             }
 
-            // Skip empty bodies and non-text placeholder types
-            if (!messageBody || messageBody.startsWith("[")) continue;
+            // Skip truly empty non-image messages and bracket-only placeholders
+            const isImage = messageType === "image";
+            if (!isImage && (!messageBody || messageBody.startsWith("["))) continue;
+            // For images, skip if we couldn't download the image data and there's no caption
+            if (isImage && !imageBase64 && !messageBody) continue;
+
+            const timestamp = new Date((msg.messageTimestamp as number) * 1000).toISOString();
 
             // Handle OUTBOUND messages (sent from the connected WhatsApp phone by the user)
             if (msg.key.fromMe) {
                 await sendWebhook({
                     user_id: userId,
-                    from,                   // recipient's JID
+                    from,
                     message_body: messageBody,
-                    timestamp: new Date((msg.messageTimestamp as number) * 1000).toISOString(),
+                    timestamp,
                     message_type: messageType,
-                    direction: "outbound",  // tells Supabase to skip auto-reply
-                    ai_generated: false,    // human-sent
+                    direction: "outbound",
+                    ai_generated: false,
+                    ...(imageBase64 && { image_base64: imageBase64 }),
                 });
-                continue; // skip inbound processing
+                continue;
             }
 
             // Handle INBOUND messages (received from others)
@@ -197,9 +212,10 @@ export async function startSession(userId: string): Promise<SessionInfo> {
                 user_id: userId,
                 from,
                 message_body: messageBody,
-                timestamp: new Date((msg.messageTimestamp as number) * 1000).toISOString(),
+                timestamp,
                 message_type: messageType,
                 direction: "inbound",
+                ...(imageBase64 && { image_base64: imageBase64 }),
             });
         }
     });
