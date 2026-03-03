@@ -13,7 +13,7 @@ import fs from "fs";
 import { sendWebhook } from "./webhookSender";
 import { SessionInfo } from "../types";
 
-interface UserSession {
+interface WhatsAppSession {
     socket: WASocket | null;
     qr: string | null;          // base64 data URI of QR image
     connected: boolean;
@@ -22,7 +22,7 @@ interface UserSession {
     connecting: boolean;         // prevents duplicate startSession calls
 }
 
-const sessions = new Map<string, UserSession>();
+const sessions = new Map<string, WhatsAppSession>();
 const SESSIONS_DIR = path.join(process.cwd(), "sessions");
 
 // Ensure sessions directory exists
@@ -30,9 +30,9 @@ if (!fs.existsSync(SESSIONS_DIR)) {
     fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 }
 
-function getSession(userId: string): UserSession {
-    if (!sessions.has(userId)) {
-        sessions.set(userId, {
+function getSession(sessionId: string): WhatsAppSession {
+    if (!sessions.has(sessionId)) {
+        sessions.set(sessionId, {
             socket: null,
             qr: null,
             connected: false,
@@ -41,11 +41,11 @@ function getSession(userId: string): UserSession {
             connecting: false,
         });
     }
-    return sessions.get(userId)!;
+    return sessions.get(sessionId)!;
 }
 
-export async function startSession(userId: string): Promise<SessionInfo> {
-    const session = getSession(userId);
+export async function startSession(sessionId: string): Promise<SessionInfo> {
+    const session = getSession(sessionId);
 
     // Already connected
     if (session.connected && session.socket) {
@@ -70,7 +70,7 @@ export async function startSession(userId: string): Promise<SessionInfo> {
     session.connecting = true;
     session.qr = null;
 
-    const authDir = path.join(SESSIONS_DIR, userId);
+    const authDir = path.join(SESSIONS_DIR, sessionId);
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
     // Fetch the latest compatible WhatsApp web version to avoid 405 errors
@@ -98,7 +98,7 @@ export async function startSession(userId: string): Promise<SessionInfo> {
             try {
                 session.qr = await QRCode.toDataURL(qr);
             } catch (err) {
-                console.error(`QR generation error for ${userId}:`, err);
+                console.error(`QR generation error for session ${sessionId}:`, err);
             }
         }
 
@@ -109,7 +109,7 @@ export async function startSession(userId: string): Promise<SessionInfo> {
             session.lastActive = new Date().toISOString();
             // Extract phone number from socket user info
             session.phoneNumber = sock.user?.id?.split(":")[0] || null;
-            console.log(`Session connected for user ${userId}: ${session.phoneNumber}`);
+            console.log(`Session connected for ${sessionId}: ${session.phoneNumber}`);
         }
 
         if (connection === "close") {
@@ -119,12 +119,12 @@ export async function startSession(userId: string): Promise<SessionInfo> {
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
             console.log(
-                `Session closed for ${userId}. Status: ${statusCode}. Reconnect: ${shouldReconnect}`
+                `Session closed for ${sessionId}. Status: ${statusCode}. Reconnect: ${shouldReconnect}`
             );
 
             if (shouldReconnect) {
                 // Auto-reconnect after a brief delay
-                setTimeout(() => startSession(userId), 3000);
+                setTimeout(() => startSession(sessionId), 3000);
             } else {
                 // User logged out — clean up auth files
                 session.socket = null;
@@ -168,7 +168,7 @@ export async function startSession(userId: string): Promise<SessionInfo> {
                     const buffer = await downloadMediaMessage(msg, "buffer", {}) as Buffer;
                     imageBase64 = buffer.toString("base64");
                 } catch (err) {
-                    console.error(`Image download error for ${userId}:`, err);
+                    console.error(`Image download error for session ${sessionId}:`, err);
                 }
             } else if (msg.message.videoMessage?.caption) {
                 messageBody = msg.message.videoMessage.caption;
@@ -195,7 +195,7 @@ export async function startSession(userId: string): Promise<SessionInfo> {
             // Handle OUTBOUND messages (sent from the connected WhatsApp phone by the user)
             if (msg.key.fromMe) {
                 await sendWebhook({
-                    user_id: userId,
+                    session_id: sessionId,
                     from,
                     message_body: messageBody,
                     timestamp,
@@ -209,7 +209,7 @@ export async function startSession(userId: string): Promise<SessionInfo> {
 
             // Handle INBOUND messages (received from others)
             await sendWebhook({
-                user_id: userId,
+                session_id: sessionId,
                 from,
                 message_body: messageBody,
                 timestamp,
@@ -231,8 +231,8 @@ export async function startSession(userId: string): Promise<SessionInfo> {
     };
 }
 
-export function getSessionStatus(userId: string): SessionInfo {
-    const session = getSession(userId);
+export function getSessionStatus(sessionId: string): SessionInfo {
+    const session = getSession(sessionId);
     return {
         connected: session.connected,
         phone_number: session.phoneNumber,
@@ -241,16 +241,16 @@ export function getSessionStatus(userId: string): SessionInfo {
     };
 }
 
-export function getQR(userId: string): string | null {
-    return getSession(userId).qr;
+export function getQR(sessionId: string): string | null {
+    return getSession(sessionId).qr;
 }
 
 export async function sendMessage(
-    userId: string,
+    sessionId: string,
     to: string,
     message: string
 ): Promise<boolean> {
-    const session = getSession(userId);
+    const session = getSession(sessionId);
     if (!session.connected || !session.socket) {
         throw new Error("Session not connected");
     }
@@ -259,13 +259,13 @@ export async function sendMessage(
         session.lastActive = new Date().toISOString();
         return true;
     } catch (err) {
-        console.error(`Send message error for ${userId}:`, err);
+        console.error(`Send message error for session ${sessionId}:`, err);
         throw err;
     }
 }
 
-export async function disconnectSession(userId: string): Promise<void> {
-    const session = getSession(userId);
+export async function disconnectSession(sessionId: string): Promise<void> {
+    const session = getSession(sessionId);
     if (session.socket) {
         await session.socket.logout();
         session.socket = null;
@@ -275,10 +275,10 @@ export async function disconnectSession(userId: string): Promise<void> {
     session.qr = null;
     session.phoneNumber = null;
 
-    const authDir = path.join(SESSIONS_DIR, userId);
+    const authDir = path.join(SESSIONS_DIR, sessionId);
     if (fs.existsSync(authDir)) {
         fs.rmSync(authDir, { recursive: true, force: true });
     }
 
-    sessions.delete(userId);
+    sessions.delete(sessionId);
 }

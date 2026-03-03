@@ -1,6 +1,6 @@
 export interface WebhookPayload {
-    user_id: string;
-    from: string;           // sender's WhatsApp JID e.g. "923001234567@s.whatsapp.net"
+    session_id: string;
+    from: string;           // sender's or recipient's WhatsApp JID
     message_body: string;
     timestamp: string;       // ISO 8601
     message_type: "text" | "image" | "video" | "document" | "audio" | "other";
@@ -10,7 +10,7 @@ export interface WebhookPayload {
 }
 
 export interface SendMessageRequest {
-    user_id: string;
+    sessionId: string;
     to: string;              // recipient WhatsApp JID
     message: string;
 }
@@ -23,5 +23,5 @@ export interface SessionInfo {
 }
 
 export interface StartSessionRequest {
-    userId: string;
+    sessionId: string;
 }

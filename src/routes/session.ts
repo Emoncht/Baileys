@@ -12,10 +12,10 @@ const router = Router();
 // POST /session/start — Start a new WhatsApp session and get QR
 router.post("/start", qrRateLimiter, async (req: Request, res: Response) => {
     try {
-        const { userId } = req.body;
-        if (!userId) return res.status(400).json({ error: "userId is required" });
+        const { sessionId } = req.body;
+        if (!sessionId) return res.status(400).json({ error: "sessionId is required" });
 
-        const result = await startSession(userId);
+        const result = await startSession(sessionId);
         res.json(result);
     } catch (err: any) {
         console.error("Start session error:", err);
@@ -23,33 +23,33 @@ router.post("/start", qrRateLimiter, async (req: Request, res: Response) => {
     }
 });
 
-// GET /session/qr/:userId — Get current QR code
-router.get("/qr/:userId", qrRateLimiter, (req: Request, res: Response) => {
+// GET /session/qr/:sessionId — Get current QR code
+router.get("/qr/:sessionId", qrRateLimiter, (req: Request, res: Response) => {
     try {
-        const { userId } = req.params;
-        const qr = getQR(userId);
+        const { sessionId } = req.params;
+        const qr = getQR(sessionId);
         res.json({ qr });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// GET /session/status/:userId — Get connection status
-router.get("/status/:userId", (req: Request, res: Response) => {
+// GET /session/status/:sessionId — Get connection status
+router.get("/status/:sessionId", (req: Request, res: Response) => {
     try {
-        const { userId } = req.params;
-        const status = getSessionStatus(userId);
+        const { sessionId } = req.params;
+        const status = getSessionStatus(sessionId);
         res.json(status);
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// POST /session/disconnect/:userId — Disconnect and clean up
-router.post("/disconnect/:userId", async (req: Request, res: Response) => {
+// POST /session/disconnect/:sessionId — Disconnect and clean up
+router.post("/disconnect/:sessionId", async (req: Request, res: Response) => {
     try {
-        const { userId } = req.params;
-        await disconnectSession(userId);
+        const { sessionId } = req.params;
+        await disconnectSession(sessionId);
         res.json({ success: true });
     } catch (err: any) {
         res.status(500).json({ error: err.message });

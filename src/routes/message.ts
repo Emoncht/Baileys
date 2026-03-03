@@ -8,12 +8,12 @@ const router = Router();
 // POST /message/send — Send a WhatsApp message
 router.post("/send", messageRateLimiter, async (req: Request, res: Response) => {
     try {
-        const { user_id, to, message } = req.body as SendMessageRequest;
-        if (!user_id || !to || !message) {
-            return res.status(400).json({ error: "user_id, to, and message are required" });
+        const { sessionId, to, message } = req.body as SendMessageRequest;
+        if (!sessionId || !to || !message) {
+            return res.status(400).json({ error: "sessionId, to, and message are required" });
         }
 
-        await sendMessage(user_id, to, message);
+        await sendMessage(sessionId, to, message);
         res.json({ success: true });
     } catch (err: any) {
         console.error("Send message error:", err);
