@@ -1,6 +1,7 @@
 export interface WebhookPayload {
     session_id: string;
     from: string;           // sender's or recipient's WhatsApp JID
+    phone_number?: string;  // clean phone digits e.g. "8801533021652"
     message_body: string;
     timestamp: string;       // ISO 8601
     message_type: "text" | "image" | "video" | "document" | "audio" | "other";

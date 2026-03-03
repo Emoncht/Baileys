@@ -3,6 +3,7 @@ import makeWASocket, {
     DisconnectReason,
     fetchLatestBaileysVersion,
     downloadMediaMessage,
+    jidNormalizedUser,
     WASocket,
     BaileysEventMap,
 } from "@whiskeysockets/baileys";
@@ -12,6 +13,56 @@ import path from "path";
 import fs from "fs";
 import { sendWebhook } from "./webhookSender";
 import { SessionInfo } from "../types";
+
+/**
+ * Resolve a JID to a phone-based JID.
+ * - If already @s.whatsapp.net, return as-is with extracted phone digits
+ * - If @lid, try to normalize via jidNormalizedUser
+ * - Extract clean phone digits for the phone_number field
+ */
+function resolveJid(
+    sock: WASocket,
+    rawJid: string
+): { resolvedJid: string; phoneNumber: string | null } {
+    // Already a phone-based JID
+    if (rawJid.endsWith("@s.whatsapp.net")) {
+        const phone = rawJid.replace("@s.whatsapp.net", "");
+        return { resolvedJid: rawJid, phoneNumber: phone };
+    }
+
+    // Try to resolve @lid via the socket's contact store or jidNormalizedUser
+    if (rawJid.endsWith("@lid")) {
+        try {
+            // Check if socket has a store with contacts
+            const store = (sock as any).store;
+            if (store?.contacts) {
+                const contact = store.contacts[rawJid];
+                if (contact?.id && contact.id.endsWith("@s.whatsapp.net")) {
+                    const phone = contact.id.replace("@s.whatsapp.net", "");
+                    console.log(`[JID] Resolved LID ${rawJid} → ${contact.id}`);
+                    return { resolvedJid: contact.id, phoneNumber: phone };
+                }
+            }
+
+            // Try jidNormalizedUser (strips :device suffix, normalizes format)
+            const normalized = jidNormalizedUser(rawJid);
+            if (normalized && normalized !== rawJid && normalized.endsWith("@s.whatsapp.net")) {
+                const phone = normalized.replace("@s.whatsapp.net", "");
+                console.log(`[JID] Normalized LID ${rawJid} → ${normalized}`);
+                return { resolvedJid: normalized, phoneNumber: phone };
+            }
+        } catch (err) {
+            console.error(`[JID] Failed to resolve LID ${rawJid}:`, err);
+        }
+
+        // Could not resolve — send @lid as-is, but no phone_number
+        console.warn(`[JID] Could not resolve LID ${rawJid} to phone JID`);
+        return { resolvedJid: rawJid, phoneNumber: null };
+    }
+
+    // Unknown format — return as-is
+    return { resolvedJid: rawJid, phoneNumber: null };
+}
 
 interface WhatsAppSession {
     socket: WASocket | null;
@@ -145,9 +196,12 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
             if (msg.key.remoteJid === "status@broadcast") continue;
             if (!msg.message) continue;
 
-            const from = msg.key.remoteJid || "";
+            const rawJid = msg.key.remoteJid || "";
             // Only handle individual chats (not groups)
-            if (from.endsWith("@g.us")) continue;
+            if (rawJid.endsWith("@g.us")) continue;
+
+            // Resolve @lid JIDs to phone-based @s.whatsapp.net JIDs
+            const { resolvedJid: from, phoneNumber } = resolveJid(sock, rawJid);
 
             // Extract text body and detect message type
             let messageBody = "";
@@ -197,6 +251,7 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
                 await sendWebhook({
                     session_id: sessionId,
                     from,
+                    phone_number: phoneNumber || undefined,
                     message_body: messageBody,
                     timestamp,
                     message_type: messageType,
@@ -211,6 +266,7 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
             await sendWebhook({
                 session_id: sessionId,
                 from,
+                phone_number: phoneNumber || undefined,
                 message_body: messageBody,
                 timestamp,
                 message_type: messageType,
