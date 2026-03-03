@@ -135,13 +135,12 @@ export async function startSession(userId: string): Promise<SessionInfo> {
         }
     });
 
-    // Handle incoming messages
+    // Handle incoming and outgoing messages
     sock.ev.on("messages.upsert", async ({ messages: msgs, type }) => {
         if (type !== "notify") return;
 
         for (const msg of msgs) {
-            // Skip messages sent by us, status broadcasts, and protocol messages
-            if (msg.key.fromMe) continue;
+            // Skip status broadcasts and messages with no content
             if (msg.key.remoteJid === "status@broadcast") continue;
             if (!msg.message) continue;
 
@@ -176,16 +175,31 @@ export async function startSession(userId: string): Promise<SessionInfo> {
                 messageType = "other";
             }
 
-            // Only process messages with actual text content for AI replies
+            // Skip empty bodies and non-text placeholder types
             if (!messageBody || messageBody.startsWith("[")) continue;
 
-            // Send to Supabase webhook
+            // Handle OUTBOUND messages (sent from the connected WhatsApp phone by the user)
+            if (msg.key.fromMe) {
+                await sendWebhook({
+                    user_id: userId,
+                    from,                   // recipient's JID
+                    message_body: messageBody,
+                    timestamp: new Date((msg.messageTimestamp as number) * 1000).toISOString(),
+                    message_type: messageType,
+                    direction: "outbound",  // tells Supabase to skip auto-reply
+                    ai_generated: false,    // human-sent
+                });
+                continue; // skip inbound processing
+            }
+
+            // Handle INBOUND messages (received from others)
             await sendWebhook({
                 user_id: userId,
                 from,
                 message_body: messageBody,
                 timestamp: new Date((msg.messageTimestamp as number) * 1000).toISOString(),
                 message_type: messageType,
+                direction: "inbound",
             });
         }
     });

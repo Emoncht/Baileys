@@ -4,6 +4,8 @@ export interface WebhookPayload {
     message_body: string;
     timestamp: string;       // ISO 8601
     message_type: "text" | "image" | "video" | "document" | "audio" | "other";
+    direction?: "inbound" | "outbound";  // NEW: "outbound" skips auto-reply on Supabase
+    ai_generated?: boolean;              // NEW: false = human-sent
 }
 
 export interface SendMessageRequest {

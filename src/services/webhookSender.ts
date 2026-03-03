@@ -16,7 +16,7 @@ export async function sendWebhook(payload: WebhookPayload): Promise<void> {
             const text = await res.text();
             console.error(`Webhook failed (${res.status}):`, text);
         } else {
-            console.log(`Webhook sent for user ${payload.user_id} from ${payload.from}`);
+            console.log(`Webhook sent (${payload.direction || "inbound"}) for user ${payload.user_id} from ${payload.from}`);
         }
     } catch (err) {
         console.error("Webhook send error:", err);
