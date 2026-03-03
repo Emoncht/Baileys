@@ -6,6 +6,9 @@ import messageRoutes from "./routes/message";
 
 const app = express();
 
+// Trust Railway's reverse proxy so express-rate-limit can read X-Forwarded-For correctly
+app.set("trust proxy", 1);
+
 app.use(express.json());
 
 // Health check (no auth required)
