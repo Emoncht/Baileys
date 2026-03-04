@@ -20,6 +20,11 @@ export interface WebhookPayload {
     direction?: "inbound" | "outbound";  // "outbound" skips auto-reply on Supabase
     ai_generated?: boolean;              // false = human-sent
     image_base64?: string;               // base64-encoded image data (no data URI prefix)
+    message_key?: {                      // raw Baileys message key for read receipts
+        remoteJid?: string;
+        id?: string;
+        fromMe?: boolean;
+    };
 }
 
 export interface SendMessageRequest {

@@ -345,6 +345,7 @@ export async function startSession(
                     message_type: messageType,
                     direction: "outbound",
                     ai_generated: false,
+                    message_key: { remoteJid: msg.key.remoteJid || undefined, id: msg.key.id || undefined, fromMe: msg.key.fromMe || undefined },
                     ...(imageBase64 && { image_base64: imageBase64 }),
                 });
                 continue;
@@ -358,6 +359,7 @@ export async function startSession(
                 timestamp,
                 message_type: messageType,
                 direction: "inbound",
+                message_key: { remoteJid: msg.key.remoteJid || undefined, id: msg.key.id || undefined, fromMe: msg.key.fromMe || undefined },
                 ...(imageBase64 && { image_base64: imageBase64 }),
             });
         }
