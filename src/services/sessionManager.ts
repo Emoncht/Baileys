@@ -13,8 +13,10 @@ import path from "path";
 import fs from "fs";
 import { sendWebhook } from "./webhookSender";
 import { SessionInfo } from "../types";
-import { AntiBan } from "../lib/antiban";
-import type { AntiBanStats, HealthStatus } from "../lib/antiban";
+import type { AccountType, AntiBanOverride } from "../types";
+import { AntiBan, getAccountProfile, mergeAntiBanConfig } from "../lib/antiban";
+import type { AntiBanConfig, AntiBanStats, HealthStatus } from "../lib/antiban";
+import { getBrowserFingerprint } from "../lib/browserFingerprint";
 
 /**
  * Resolve a JID to a phone-based JID.
@@ -114,7 +116,11 @@ function saveWarmUpState(sessionId: string, antiban: AntiBan) {
     }
 }
 
-export async function startSession(sessionId: string): Promise<SessionInfo> {
+export async function startSession(
+    sessionId: string,
+    accountType: AccountType = "fresh",
+    antiBanOverride?: AntiBanOverride
+): Promise<SessionInfo> {
     const session = getSession(sessionId);
 
     // Already connected
@@ -140,39 +146,21 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
     session.connecting = true;
     session.qr = null;
 
-    // ── Anti-ban setup ───────────────────────────────────────────────
-    const warmUpState = loadWarmUpState(sessionId);
-    const antiban = new AntiBan(
-        {
-            rateLimiter: {
-                maxPerMinute: 8,
-                maxPerHour: 200,
-                maxPerDay: 1500,
-                minDelayMs: 1500,
-                maxDelayMs: 5000,
-                newChatDelayMs: 3000,
-                maxIdenticalMessages: 3,
-                burstAllowance: 3,
+    // ── Anti-ban setup (profile-based) ───────────────────────────────
+    const baseConfig = getAccountProfile(accountType);
+    const finalConfig = mergeAntiBanConfig(baseConfig, {
+        ...antiBanOverride,
+        health: {
+            ...antiBanOverride?.health,
+            onRiskChange: (status: HealthStatus) => {
+                console.log(`[antiban][${sessionId}] Risk: ${status.risk} — ${status.recommendation}`);
             },
-            warmUp: {
-                warmUpDays: 7,
-                day1Limit: 20,
-                growthFactor: 1.8,
-                inactivityThresholdHours: 72,
-            },
-            health: {
-                disconnectWarningThreshold: 3,
-                disconnectCriticalThreshold: 5,
-                failedMessageThreshold: 5,
-                autoPauseAt: "high",
-                onRiskChange: (status: HealthStatus) => {
-                    console.log(`[antiban][${sessionId}] Risk: ${status.risk} — ${status.recommendation}`);
-                },
-            },
-            logging: true,
         },
-        warmUpState
-    );
+    });
+    console.log(`[antiban][${sessionId}] Using "${accountType}" profile`);
+
+    const warmUpState = loadWarmUpState(sessionId);
+    const antiban = new AntiBan(finalConfig, warmUpState);
     session.antiban = antiban;
 
     // Persist warm-up state every 5 minutes
@@ -186,11 +174,14 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
     const { version } = await fetchLatestBaileysVersion();
     console.log(`Using WA version: ${version}`);
 
+    // ── Real browser fingerprint ─────────────────────────────────────
+    const browserFingerprint = getBrowserFingerprint(sessionId, SESSIONS_DIR);
+
     const sock = makeWASocket({
         auth: state,
         version,
         printQRInTerminal: false,
-        browser: ["WhatsApp AutoReply", "Chrome", "1.0.0"],
+        browser: browserFingerprint,
     });
 
     session.socket = sock;
@@ -354,6 +345,39 @@ export function getQR(sessionId: string): string | null {
 export function getAntiBanStats(sessionId: string): AntiBanStats | null {
     const session = sessions.get(sessionId);
     return session?.antiban?.getStats() || null;
+}
+
+/**
+ * Update antiban config on a running session.
+ * Creates a new AntiBan instance with the merged config while preserving warm-up state.
+ */
+export function updateAntiBanConfig(
+    sessionId: string,
+    accountType: AccountType = "fresh",
+    antiBanOverride?: AntiBanOverride
+): AntiBanStats | null {
+    const session = sessions.get(sessionId);
+    if (!session) return null;
+
+    // Preserve existing warm-up state
+    const existingWarmUpState = session.antiban?.exportWarmUpState();
+
+    const baseConfig = getAccountProfile(accountType);
+    const finalConfig = mergeAntiBanConfig(baseConfig, {
+        ...antiBanOverride,
+        health: {
+            ...antiBanOverride?.health,
+            onRiskChange: (status: HealthStatus) => {
+                console.log(`[antiban][${sessionId}] Risk: ${status.risk} — ${status.recommendation}`);
+            },
+        },
+    });
+
+    const antiban = new AntiBan(finalConfig, existingWarmUpState);
+    session.antiban = antiban;
+    console.log(`[antiban][${sessionId}] Config updated to "${accountType}" profile with overrides`);
+
+    return antiban.getStats();
 }
 
 export async function sendMessage(

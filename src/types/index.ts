@@ -1,3 +1,15 @@
+import type { RateLimiterConfig } from "../lib/antiban/rateLimiter";
+import type { WarmUpConfig } from "../lib/antiban/warmup";
+import type { HealthMonitorConfig } from "../lib/antiban/health";
+
+export type AccountType = "fresh" | "established" | "trusted";
+
+export interface AntiBanOverride {
+    rateLimiter?: Partial<RateLimiterConfig>;
+    warmUp?: Partial<WarmUpConfig>;
+    health?: Partial<Omit<HealthMonitorConfig, "onRiskChange">>;
+}
+
 export interface WebhookPayload {
     session_id: string;
     from: string;           // sender's or recipient's WhatsApp JID
@@ -25,4 +37,6 @@ export interface SessionInfo {
 
 export interface StartSessionRequest {
     sessionId: string;
+    accountType?: AccountType;         // defaults to "fresh"
+    antiBanOverride?: AntiBanOverride; // optional power-user overrides
 }

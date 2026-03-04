@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
-import { sendMessage, getAntiBanStats } from "../services/sessionManager";
+import { sendMessage, getAntiBanStats, updateAntiBanConfig } from "../services/sessionManager";
 import { messageRateLimiter } from "../middleware/rateLimiter";
-import { SendMessageRequest } from "../types";
+import type { SendMessageRequest, AntiBanOverride, AccountType } from "../types";
 
 const router = Router();
 
@@ -29,6 +29,25 @@ router.get("/antiban/stats/:sessionId", (req: Request, res: Response) => {
         if (!stats) return res.status(404).json({ error: "Session not found or antiban not active" });
         res.json(stats);
     } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// PUT /message/antiban/config/:sessionId — Update antiban config on a running session
+router.put("/antiban/config/:sessionId", (req: Request, res: Response) => {
+    try {
+        const { sessionId } = req.params;
+        const { accountType, antiBanOverride } = req.body as {
+            accountType?: AccountType;
+            antiBanOverride?: AntiBanOverride;
+        };
+
+        const stats = updateAntiBanConfig(sessionId, accountType, antiBanOverride);
+        if (!stats) return res.status(404).json({ error: "Session not found" });
+
+        res.json({ success: true, stats });
+    } catch (err: any) {
+        console.error("Update antiban config error:", err);
         res.status(500).json({ error: err.message });
     }
 });

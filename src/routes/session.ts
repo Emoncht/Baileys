@@ -6,16 +6,17 @@ import {
     disconnectSession,
 } from "../services/sessionManager";
 import { qrRateLimiter } from "../middleware/rateLimiter";
+import type { StartSessionRequest } from "../types";
 
 const router = Router();
 
 // POST /session/start — Start a new WhatsApp session and get QR
 router.post("/start", qrRateLimiter, async (req: Request, res: Response) => {
     try {
-        const { sessionId } = req.body;
+        const { sessionId, accountType, antiBanOverride } = req.body as StartSessionRequest;
         if (!sessionId) return res.status(400).json({ error: "sessionId is required" });
 
-        const result = await startSession(sessionId);
+        const result = await startSession(sessionId, accountType, antiBanOverride);
         res.json(result);
     } catch (err: any) {
         console.error("Start session error:", err);
