@@ -116,6 +116,36 @@ function saveWarmUpState(sessionId: string, antiban: AntiBan) {
     }
 }
 
+interface SessionPersistedConfig {
+    accountType: AccountType;
+    antiBanOverride?: AntiBanOverride;
+}
+
+/** Load persisted antiban config for a session (survives restarts) */
+function loadSessionConfig(sessionId: string): SessionPersistedConfig | undefined {
+    const configPath = path.join(SESSIONS_DIR, sessionId, "config.json");
+    try {
+        if (fs.existsSync(configPath)) {
+            return JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        }
+    } catch { /* ignore */ }
+    return undefined;
+}
+
+/** Persist antiban config so it survives restarts */
+function saveSessionConfig(sessionId: string, accountType: AccountType, override?: AntiBanOverride) {
+    const dir = path.join(SESSIONS_DIR, sessionId);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const configPath = path.join(dir, "config.json");
+    try {
+        const data: SessionPersistedConfig = { accountType, antiBanOverride: override };
+        fs.writeFileSync(configPath, JSON.stringify(data));
+    } catch (err) {
+        console.error(`[antiban] Failed to save config for ${sessionId}:`, err);
+    }
+}
+
 export async function startSession(
     sessionId: string,
     accountType: AccountType = "fresh",
@@ -147,17 +177,32 @@ export async function startSession(
     session.qr = null;
 
     // ── Anti-ban setup (profile-based) ───────────────────────────────
-    const baseConfig = getAccountProfile(accountType);
+    let finalAccountType = accountType;
+    let finalOverride = antiBanOverride;
+
+    // If explicit args weren't passed (e.g., auto-restore), try loading from disk
+    if (accountType === "fresh" && !antiBanOverride) {
+        const savedConfig = loadSessionConfig(sessionId);
+        if (savedConfig) {
+            finalAccountType = savedConfig.accountType;
+            finalOverride = savedConfig.antiBanOverride;
+        }
+    } else {
+        // Explicit args were passed (e.g. from /session/start), save them to disk
+        saveSessionConfig(sessionId, accountType, antiBanOverride);
+    }
+
+    const baseConfig = getAccountProfile(finalAccountType);
     const finalConfig = mergeAntiBanConfig(baseConfig, {
-        ...antiBanOverride,
+        ...finalOverride,
         health: {
-            ...antiBanOverride?.health,
+            ...finalOverride?.health,
             onRiskChange: (status: HealthStatus) => {
                 console.log(`[antiban][${sessionId}] Risk: ${status.risk} — ${status.recommendation}`);
             },
         },
     });
-    console.log(`[antiban][${sessionId}] Using "${accountType}" profile`);
+    console.log(`[antiban][${sessionId}] Using "${finalAccountType}" profile`);
 
     const warmUpState = loadWarmUpState(sessionId);
     const antiban = new AntiBan(finalConfig, warmUpState);
@@ -375,6 +420,10 @@ export function updateAntiBanConfig(
 
     const antiban = new AntiBan(finalConfig, existingWarmUpState);
     session.antiban = antiban;
+
+    // Save the new config exactly as given so it survives restarts
+    saveSessionConfig(sessionId, accountType, antiBanOverride);
+
     console.log(`[antiban][${sessionId}] Config updated to "${accountType}" profile with overrides`);
 
     return antiban.getStats();
@@ -459,4 +508,34 @@ export async function disconnectSession(sessionId: string): Promise<void> {
     }
 
     sessions.delete(sessionId);
+}
+
+/** Automatically restart all existing sessions with valid credentials */
+export async function restoreSessions(): Promise<void> {
+    console.log(`[system] Auto-restoring sessions from disk...`);
+
+    try {
+        const contents = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true });
+        let restoredCount = 0;
+
+        for (const item of contents) {
+            if (item.isDirectory()) {
+                const sessionId = item.name;
+                const credsPath = path.join(SESSIONS_DIR, sessionId, "creds.json");
+
+                if (fs.existsSync(credsPath)) {
+                    console.log(`[system] Restoring session: ${sessionId}`);
+                    // Start in the background to avoid blocking server boot
+                    startSession(sessionId).catch(err => {
+                        console.error(`[system] Failed to restore session ${sessionId}:`, err);
+                    });
+                    restoredCount++;
+                }
+            }
+        }
+
+        console.log(`[system] Restoring ${restoredCount} sessions in background...`);
+    } catch (err) {
+        console.error(`[system] Error reading sessions directory for auto-restore:`, err);
+    }
 }

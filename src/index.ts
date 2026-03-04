@@ -3,6 +3,7 @@ import { config } from "./config";
 import { apiKeyAuth } from "./middleware/auth";
 import sessionRoutes from "./routes/session";
 import messageRoutes from "./routes/message";
+import { restoreSessions } from "./services/sessionManager";
 
 const app = express();
 
@@ -22,4 +23,6 @@ app.use("/message", apiKeyAuth, messageRoutes);
 
 app.listen(config.port, () => {
     console.log(`Baileys server running on port ${config.port}`);
+    // Auto-restore any disconnected sessions from disk
+    restoreSessions();
 });
