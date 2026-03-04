@@ -13,27 +13,25 @@ import path from "path";
 import fs from "fs";
 import { sendWebhook } from "./webhookSender";
 import { SessionInfo } from "../types";
+import { AntiBan, wrapSocket } from "baileys-antiban";
+import type { AntiBanStats } from "baileys-antiban";
 
 /**
  * Resolve a JID to a phone-based JID.
  * - If already @s.whatsapp.net, return as-is with extracted phone digits
  * - If @lid, try to normalize via jidNormalizedUser
- * - Extract clean phone digits for the phone_number field
  */
 function resolveJid(
     sock: WASocket,
     rawJid: string
 ): { resolvedJid: string; phoneNumber: string | null } {
-    // Already a phone-based JID
     if (rawJid.endsWith("@s.whatsapp.net")) {
         const phone = rawJid.replace("@s.whatsapp.net", "");
         return { resolvedJid: rawJid, phoneNumber: phone };
     }
 
-    // Try to resolve @lid via the socket's contact store or jidNormalizedUser
     if (rawJid.endsWith("@lid")) {
         try {
-            // Check if socket has a store with contacts
             const store = (sock as any).store;
             if (store?.contacts) {
                 const contact = store.contacts[rawJid];
@@ -44,7 +42,6 @@ function resolveJid(
                 }
             }
 
-            // Try jidNormalizedUser (strips :device suffix, normalizes format)
             const normalized = jidNormalizedUser(rawJid);
             if (normalized && normalized !== rawJid && normalized.endsWith("@s.whatsapp.net")) {
                 const phone = normalized.replace("@s.whatsapp.net", "");
@@ -55,12 +52,10 @@ function resolveJid(
             console.error(`[JID] Failed to resolve LID ${rawJid}:`, err);
         }
 
-        // Could not resolve — send @lid as-is, but no phone_number
         console.warn(`[JID] Could not resolve LID ${rawJid} to phone JID`);
         return { resolvedJid: rawJid, phoneNumber: null };
     }
 
-    // Unknown format — return as-is
     return { resolvedJid: rawJid, phoneNumber: null };
 }
 
@@ -71,6 +66,7 @@ interface WhatsAppSession {
     phoneNumber: string | null;
     lastActive: string | null;
     connecting: boolean;         // prevents duplicate startSession calls
+    antiban: AntiBan | null;     // antiban instance for this session
 }
 
 const sessions = new Map<string, WhatsAppSession>();
@@ -90,9 +86,32 @@ function getSession(sessionId: string): WhatsAppSession {
             phoneNumber: null,
             lastActive: null,
             connecting: false,
+            antiban: null,
         });
     }
     return sessions.get(sessionId)!;
+}
+
+/** Load persisted warm-up state for a session (survives restarts) */
+function loadWarmUpState(sessionId: string) {
+    const warmupPath = path.join(SESSIONS_DIR, sessionId, "warmup.json");
+    try {
+        if (fs.existsSync(warmupPath)) {
+            return JSON.parse(fs.readFileSync(warmupPath, "utf-8"));
+        }
+    } catch { /* ignore – start fresh */ }
+    return undefined;
+}
+
+/** Persist warm-up state so it survives restarts / redeployments */
+function saveWarmUpState(sessionId: string, antiban: AntiBan) {
+    const warmupPath = path.join(SESSIONS_DIR, sessionId, "warmup.json");
+    try {
+        const state = antiban.exportWarmUpState();
+        fs.writeFileSync(warmupPath, JSON.stringify(state));
+    } catch (err) {
+        console.error(`[antiban] Failed to save warm-up state for ${sessionId}:`, err);
+    }
 }
 
 export async function startSession(sessionId: string): Promise<SessionInfo> {
@@ -121,6 +140,45 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
     session.connecting = true;
     session.qr = null;
 
+    // ── Anti-ban setup ───────────────────────────────────────────────
+    const warmUpState = loadWarmUpState(sessionId);
+    const antiban = new AntiBan(
+        {
+            rateLimiter: {
+                maxPerMinute: 8,
+                maxPerHour: 200,
+                maxPerDay: 1500,
+                minDelayMs: 1500,
+                maxDelayMs: 5000,
+                newChatDelayMs: 3000,
+                maxIdenticalMessages: 3,
+                burstAllowance: 3,
+            },
+            warmUp: {
+                warmUpDays: 7,
+                day1Limit: 20,
+                growthFactor: 1.8,
+                inactivityThresholdHours: 72,
+            },
+            health: {
+                disconnectWarningThreshold: 3,
+                disconnectCriticalThreshold: 5,
+                failedMessageThreshold: 5,
+                autoPauseAt: "high",
+                onRiskChange: (status) => {
+                    console.log(`[antiban][${sessionId}] Risk: ${status.risk} — ${status.recommendation}`);
+                },
+            },
+            logging: true,
+        },
+        warmUpState
+    );
+    session.antiban = antiban;
+
+    // Persist warm-up state every 5 minutes
+    const warmupInterval = setInterval(() => saveWarmUpState(sessionId, antiban), 5 * 60 * 1000);
+    // ────────────────────────────────────────────────────────────────
+
     const authDir = path.join(SESSIONS_DIR, sessionId);
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
@@ -128,24 +186,26 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
     const { version } = await fetchLatestBaileysVersion();
     console.log(`Using WA version: ${version}`);
 
-    const sock = makeWASocket({
+    const rawSock = makeWASocket({
         auth: state,
         version,
         printQRInTerminal: false,
         browser: ["WhatsApp AutoReply", "Chrome", "1.0.0"],
     });
 
+    // Wrap with anti-ban protection (intercepts sendMessage calls)
+    const sock = wrapSocket(rawSock, undefined, warmUpState) as any;
+    // Transfer the antiban instance we configured (wrapSocket creates its own, we override our stored one)
     session.socket = sock;
 
     // Handle credentials update (save auth state)
     sock.ev.on("creds.update", saveCreds);
 
     // Handle connection updates (QR code, connect, disconnect)
-    sock.ev.on("connection.update", async (update) => {
+    sock.ev.on("connection.update", async (update: any) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            // Convert QR string to base64 data URI image
             try {
                 session.qr = await QRCode.toDataURL(qr);
             } catch (err) {
@@ -158,8 +218,8 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
             session.connecting = false;
             session.qr = null;
             session.lastActive = new Date().toISOString();
-            // Extract phone number from socket user info
             session.phoneNumber = sock.user?.id?.split(":")[0] || null;
+            antiban.onReconnect();
             console.log(`Session connected for ${sessionId}: ${session.phoneNumber}`);
         }
 
@@ -169,17 +229,20 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
             const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
+            antiban.onDisconnect(statusCode || "unknown");
+            saveWarmUpState(sessionId, antiban);
+            clearInterval(warmupInterval);
+
             console.log(
                 `Session closed for ${sessionId}. Status: ${statusCode}. Reconnect: ${shouldReconnect}`
             );
 
             if (shouldReconnect) {
-                // Auto-reconnect after a brief delay
                 setTimeout(() => startSession(sessionId), 3000);
             } else {
-                // User logged out — clean up auth files
                 session.socket = null;
                 session.phoneNumber = null;
+                session.antiban = null;
                 if (fs.existsSync(authDir)) {
                     fs.rmSync(authDir, { recursive: true, force: true });
                 }
@@ -188,22 +251,18 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
     });
 
     // Handle incoming and outgoing messages
-    sock.ev.on("messages.upsert", async ({ messages: msgs, type }) => {
+    sock.ev.on("messages.upsert", async ({ messages: msgs, type }: any) => {
         if (type !== "notify") return;
 
         for (const msg of msgs) {
-            // Skip status broadcasts and messages with no content
             if (msg.key.remoteJid === "status@broadcast") continue;
             if (!msg.message) continue;
 
             const rawJid = msg.key.remoteJid || "";
-            // Only handle individual chats (not groups)
             if (rawJid.endsWith("@g.us")) continue;
 
-            // Resolve @lid JIDs to phone-based @s.whatsapp.net JIDs
             const { resolvedJid: from, phoneNumber } = resolveJid(sock, rawJid);
 
-            // Extract text body and detect message type
             let messageBody = "";
             let messageType: "text" | "image" | "video" | "document" | "audio" | "other" = "other";
             let imageBase64: string | undefined;
@@ -215,7 +274,6 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
                 messageBody = msg.message.extendedTextMessage.text;
                 messageType = "text";
             } else if (msg.message.imageMessage) {
-                // Image message — download and base64-encode regardless of caption
                 messageBody = msg.message.imageMessage.caption || "";
                 messageType = "image";
                 try {
@@ -238,15 +296,12 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
                 messageType = "other";
             }
 
-            // Skip truly empty non-image messages and bracket-only placeholders
             const isImage = messageType === "image";
             if (!isImage && (!messageBody || messageBody.startsWith("["))) continue;
-            // For images, skip if we couldn't download the image data and there's no caption
             if (isImage && !imageBase64 && !messageBody) continue;
 
             const timestamp = new Date((msg.messageTimestamp as number) * 1000).toISOString();
 
-            // Handle OUTBOUND messages (sent from the connected WhatsApp phone by the user)
             if (msg.key.fromMe) {
                 await sendWebhook({
                     session_id: sessionId,
@@ -262,7 +317,6 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
                 continue;
             }
 
-            // Handle INBOUND messages (received from others)
             await sendWebhook({
                 session_id: sessionId,
                 from,
@@ -276,7 +330,6 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
         }
     });
 
-    // Wait briefly for QR to generate (can take up to a few seconds on first run)
     await new Promise((r) => setTimeout(r, 5000));
 
     return {
@@ -301,6 +354,11 @@ export function getQR(sessionId: string): string | null {
     return getSession(sessionId).qr;
 }
 
+export function getAntiBanStats(sessionId: string): AntiBanStats | null {
+    const session = sessions.get(sessionId);
+    return session?.antiban?.getStats() || null;
+}
+
 export async function sendMessage(
     sessionId: string,
     to: string,
@@ -322,6 +380,10 @@ export async function sendMessage(
 
 export async function disconnectSession(sessionId: string): Promise<void> {
     const session = getSession(sessionId);
+
+    // Save warm-up state before disconnecting
+    if (session.antiban) saveWarmUpState(sessionId, session.antiban);
+
     if (session.socket) {
         await session.socket.logout();
         session.socket = null;
@@ -330,6 +392,7 @@ export async function disconnectSession(sessionId: string): Promise<void> {
     session.connecting = false;
     session.qr = null;
     session.phoneNumber = null;
+    session.antiban = null;
 
     const authDir = path.join(SESSIONS_DIR, sessionId);
     if (fs.existsSync(authDir)) {
