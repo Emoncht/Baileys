@@ -16,7 +16,7 @@ export interface WebhookPayload {
     phone_number?: string;  // clean phone digits e.g. "8801533021652"
     message_body: string;
     timestamp: string;       // ISO 8601
-    message_type: "text" | "image" | "video" | "document" | "audio" | "other";
+    message_type: "text" | "image" | "video" | "document" | "audio" | "ptt" | "call" | "other";
     direction?: "inbound" | "outbound";  // "outbound" skips auto-reply on Supabase
     ai_generated?: boolean;              // false = human-sent
     image_base64?: string;               // base64-encoded image data (no data URI prefix)

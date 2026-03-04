@@ -297,7 +297,7 @@ export async function startSession(
             const { resolvedJid: from, phoneNumber } = resolveJid(sock, rawJid);
 
             let messageBody = "";
-            let messageType: "text" | "image" | "video" | "document" | "audio" | "other" = "other";
+            let messageType: "text" | "image" | "video" | "document" | "audio" | "ptt" | "call" | "other" = "other";
             let imageBase64: string | undefined;
 
             if (msg.message.conversation) {
@@ -322,8 +322,12 @@ export async function startSession(
                 messageBody = msg.message.documentMessage.caption || "[Document]";
                 messageType = "document";
             } else if (msg.message.audioMessage) {
-                messageBody = "[Voice Message]";
-                messageType = "audio";
+                const isPtt = msg.message.audioMessage.ptt;
+                messageBody = isPtt ? "[🎙️ Voice Message]" : "[🎵 Audio]";
+                messageType = isPtt ? "ptt" : "audio";
+            } else if ((msg.message as any).pttMessage) {
+                messageBody = "[🎙️ Voice Message]";
+                messageType = "ptt";
             } else {
                 messageBody = "[Unsupported message type]";
                 messageType = "other";
@@ -361,6 +365,31 @@ export async function startSession(
                 direction: "inbound",
                 message_key: { remoteJid: msg.key.remoteJid || undefined, id: msg.key.id || undefined, fromMe: msg.key.fromMe || undefined },
                 ...(imageBase64 && { image_base64: imageBase64 }),
+            });
+        }
+    });
+
+    // Handle incoming calls
+    sock.ev.on("call", async (calls: any[]) => {
+        for (const call of calls) {
+            // Only process incoming calls when they are offered (ringing)
+            if (call.status !== "offer") continue;
+
+            const rawJid = call.from;
+            if (!rawJid) continue;
+
+            const { resolvedJid: from, phoneNumber } = resolveJid(sock, rawJid);
+            const timestamp = new Date((call.date?.getTime() || Date.now())).toISOString();
+
+            await sendWebhook({
+                session_id: sessionId,
+                from,
+                phone_number: phoneNumber || undefined,
+                message_body: "[📞 Incoming call]",
+                timestamp,
+                message_type: "call",
+                direction: "inbound",
+                ai_generated: false,
             });
         }
     });
