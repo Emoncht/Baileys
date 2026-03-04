@@ -13,8 +13,8 @@ import path from "path";
 import fs from "fs";
 import { sendWebhook } from "./webhookSender";
 import { SessionInfo } from "../types";
-import { AntiBan, wrapSocket } from "baileys-antiban";
-import type { AntiBanStats } from "baileys-antiban";
+import { AntiBan } from "../lib/antiban";
+import type { AntiBanStats, HealthStatus } from "../lib/antiban";
 
 /**
  * Resolve a JID to a phone-based JID.
@@ -165,7 +165,7 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
                 disconnectCriticalThreshold: 5,
                 failedMessageThreshold: 5,
                 autoPauseAt: "high",
-                onRiskChange: (status) => {
+                onRiskChange: (status: HealthStatus) => {
                     console.log(`[antiban][${sessionId}] Risk: ${status.risk} — ${status.recommendation}`);
                 },
             },
@@ -186,16 +186,13 @@ export async function startSession(sessionId: string): Promise<SessionInfo> {
     const { version } = await fetchLatestBaileysVersion();
     console.log(`Using WA version: ${version}`);
 
-    const rawSock = makeWASocket({
+    const sock = makeWASocket({
         auth: state,
         version,
         printQRInTerminal: false,
         browser: ["WhatsApp AutoReply", "Chrome", "1.0.0"],
     });
 
-    // Wrap with anti-ban protection (intercepts sendMessage calls)
-    const sock = wrapSocket(rawSock, undefined, warmUpState) as any;
-    // Transfer the antiban instance we configured (wrapSocket creates its own, we override our stored one)
     session.socket = sock;
 
     // Handle credentials update (save auth state)
