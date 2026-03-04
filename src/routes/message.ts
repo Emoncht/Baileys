@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
-import { sendMessage, getAntiBanStats, updateAntiBanConfig } from "../services/sessionManager";
+import { sendMessage, sendPresence, sendRead, getAntiBanStats, updateAntiBanConfig } from "../services/sessionManager";
 import { messageRateLimiter } from "../middleware/rateLimiter";
-import type { SendMessageRequest, AntiBanOverride, AccountType } from "../types";
+import type { SendMessageRequest, SendPresenceRequest, SendReadRequest, AntiBanOverride, AccountType } from "../types";
 
 const router = Router();
 
@@ -17,6 +17,38 @@ router.post("/send", messageRateLimiter, async (req: Request, res: Response) => 
         res.json({ success: true });
     } catch (err: any) {
         console.error("Send message error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /message/presence — Send a presence update (e.g. "composing" / typing)
+router.post("/presence", async (req: Request, res: Response) => {
+    try {
+        const { sessionId, to, presence } = req.body as SendPresenceRequest;
+        if (!sessionId || !to || !presence) {
+            return res.status(400).json({ error: "sessionId, to, and presence are required" });
+        }
+
+        await sendPresence(sessionId, to, presence);
+        res.json({ success: true });
+    } catch (err: any) {
+        console.error("Send presence error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /message/read — Send a read receipt for a message
+router.post("/read", async (req: Request, res: Response) => {
+    try {
+        const { sessionId, to, messageKey } = req.body as SendReadRequest;
+        if (!sessionId || !messageKey) {
+            return res.status(400).json({ error: "sessionId and messageKey are required" });
+        }
+
+        await sendRead(sessionId, messageKey);
+        res.json({ success: true });
+    } catch (err: any) {
+        console.error("Send read error:", err);
         res.status(500).json({ error: err.message });
     }
 });

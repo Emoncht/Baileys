@@ -40,3 +40,20 @@ export interface StartSessionRequest {
     accountType?: AccountType;         // defaults to "fresh"
     antiBanOverride?: AntiBanOverride; // optional power-user overrides
 }
+
+export interface SendPresenceRequest {
+    sessionId: string;
+    to: string;
+    presence: "unavailable" | "available" | "composing" | "recording" | "paused";
+}
+
+export interface SendReadRequest {
+    sessionId: string;
+    to: string;
+    messageKey: {
+        remoteJid?: string;
+        id?: string;
+        fromMe?: boolean;
+        participant?: string;
+    };
+}

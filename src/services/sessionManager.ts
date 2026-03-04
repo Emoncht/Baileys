@@ -399,6 +399,44 @@ export async function sendMessage(
     }
 }
 
+export async function sendPresence(
+    sessionId: string,
+    to: string,
+    presence: "unavailable" | "available" | "composing" | "recording" | "paused"
+): Promise<boolean> {
+    const session = getSession(sessionId);
+    if (!session.connected || !session.socket) {
+        throw new Error("Session not connected");
+    }
+    try {
+        await session.socket.sendPresenceUpdate(presence, to);
+        session.lastActive = new Date().toISOString();
+        return true;
+    } catch (err) {
+        console.error(`Send presence error for session ${sessionId}:`, err);
+        throw err;
+    }
+}
+
+export async function sendRead(
+    sessionId: string,
+    messageKey: { remoteJid?: string; id?: string; fromMe?: boolean; participant?: string }
+): Promise<boolean> {
+    const session = getSession(sessionId);
+    if (!session.connected || !session.socket) {
+        throw new Error("Session not connected");
+    }
+    try {
+        // Baileys readMessages takes an array of message keys
+        await session.socket.readMessages([messageKey as any]);
+        session.lastActive = new Date().toISOString();
+        return true;
+    } catch (err) {
+        console.error(`Send read receipt error for session ${sessionId}:`, err);
+        throw err;
+    }
+}
+
 export async function disconnectSession(sessionId: string): Promise<void> {
     const session = getSession(sessionId);
 
