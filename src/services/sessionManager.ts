@@ -422,7 +422,8 @@ export async function startSession(
             }
 
             const isImage = messageType === "image";
-            if (!isImage && (!messageBody || messageBody.startsWith("["))) continue;
+            const isVoice = messageType === "audio" || messageType === "ptt";
+            if (!isImage && !isVoice && (!messageBody || messageBody.startsWith("["))) continue;
             if (isImage && !imageBase64 && !messageBody) continue;
 
             const timestamp = new Date((msg.messageTimestamp as number) * 1000).toISOString();
