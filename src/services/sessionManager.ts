@@ -382,7 +382,16 @@ export async function startSession(
             const rawJid = msg.key.remoteJid || "";
             if (rawJid.endsWith("@g.us")) continue;
 
-            const { resolvedJid: from, phoneNumber } = resolveJid(sock, rawJid, sessionId);
+            let { resolvedJid: from, phoneNumber } = resolveJid(sock, rawJid, sessionId);
+
+            // Fallback for @lid: try resolving phone number from participant
+            if (!phoneNumber && rawJid.includes("@lid") && msg.key.participant) {
+                const participantJid = msg.key.participant;
+                if (participantJid.endsWith("@s.whatsapp.net")) {
+                    phoneNumber = participantJid.replace("@s.whatsapp.net", "");
+                    console.log(`[JID] Resolved phone from participant for LID ${rawJid} → ${phoneNumber}`);
+                }
+            }
 
             let messageBody = "";
             let messageType: "text" | "image" | "video" | "document" | "audio" | "ptt" | "call" | "other" = "other";
