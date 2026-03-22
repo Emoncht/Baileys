@@ -11,6 +11,7 @@ import { Boom } from "@hapi/boom";
 import QRCode from "qrcode";
 import path from "path";
 import fs from "fs";
+import pino from "pino";
 import { sendWebhook } from "./webhookSender";
 import { SessionInfo } from "../types";
 import type { AccountType, AntiBanOverride } from "../types";
@@ -274,6 +275,9 @@ export async function startSession(
         version,
         printQRInTerminal: false,
         browser: browserFingerprint,
+        syncFullHistory: false,
+        generateHighQualityLinkPreviews: false,
+        logger: pino({ level: "silent" }),
     });
 
     session.socket = sock;
