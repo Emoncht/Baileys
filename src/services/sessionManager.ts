@@ -276,7 +276,7 @@ export async function startSession(
         printQRInTerminal: false,
         browser: browserFingerprint,
         syncFullHistory: false,
-        generateHighQualityLinkPreviews: false,
+        generateHighQualityLinkPreview: false,
         logger: pino({ level: "silent" }),
     });
 
