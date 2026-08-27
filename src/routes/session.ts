@@ -4,9 +4,11 @@ import {
     getSessionStatus,
     getQR,
     disconnectSession,
+    getAllLidMappings,
+    setLidMapping,
 } from "../services/sessionManager";
 import { qrRateLimiter } from "../middleware/rateLimiter";
-import type { StartSessionRequest } from "../types";
+import type { StartSessionRequest, SetLidMappingRequest } from "../types";
 
 const router = Router();
 
@@ -41,6 +43,32 @@ router.get("/status/:sessionId", (req: Request, res: Response) => {
         const { sessionId } = req.params;
         const status = getSessionStatus(sessionId);
         res.json(status);
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /session/lidmap/:sessionId — Get all known LID to phone mappings
+router.get("/lidmap/:sessionId", (req: Request, res: Response) => {
+    try {
+        const { sessionId } = req.params;
+        const mappings = getAllLidMappings(sessionId);
+        res.json({ sessionId, total: Object.keys(mappings).length, mappings });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /session/lidmap/:sessionId — Set or update a LID to phone mapping
+router.post("/lidmap/:sessionId", (req: Request, res: Response) => {
+    try {
+        const { sessionId } = req.params;
+        const { lid, phoneNumber } = req.body as SetLidMappingRequest;
+        if (!lid || !phoneNumber) {
+            return res.status(400).json({ error: "lid and phoneNumber are required" });
+        }
+        setLidMapping(sessionId, lid, phoneNumber);
+        res.json({ success: true, message: `Mapped ${lid} -> ${phoneNumber}` });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
     }

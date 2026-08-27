@@ -4,6 +4,8 @@ import makeWASocket, {
     fetchLatestBaileysVersion,
     downloadMediaMessage,
     jidNormalizedUser,
+    isLidUser,
+    areJidsSameUser,
     WASocket,
     BaileysEventMap,
 } from "@whiskeysockets/baileys";
@@ -19,10 +21,10 @@ import { AntiBan, getAccountProfile, mergeAntiBanConfig } from "../lib/antiban";
 import type { AntiBanConfig, AntiBanStats, HealthStatus } from "../lib/antiban";
 import { getBrowserFingerprint } from "../lib/browserFingerprint";
 
-// ── Per-session LID → phone map (populated from contacts.upsert) ──────
+// ── Per-session LID → phone map (populated dynamically from contacts & messages) ──────
 const lidMaps = new Map<string, Map<string, string>>();  // sessionId → (lid → phoneJid)
 
-function getLidMap(sessionId: string): Map<string, string> {
+export function getLidMap(sessionId: string): Map<string, string> {
     if (!lidMaps.has(sessionId)) {
         lidMaps.set(sessionId, new Map());
         // Try to load persisted map from disk
@@ -41,60 +43,114 @@ function getLidMap(sessionId: string): Map<string, string> {
     return lidMaps.get(sessionId)!;
 }
 
-function saveLidMap(sessionId: string) {
+export function saveLidMap(sessionId: string) {
     const map = lidMaps.get(sessionId);
     if (!map || map.size === 0) return;
     const mapPath = path.join(SESSIONS_DIR, sessionId, "lidmap.json");
     try {
         const obj: Record<string, string> = {};
         for (const [lid, phone] of map) obj[lid] = phone;
-        fs.writeFileSync(mapPath, JSON.stringify(obj));
+        fs.writeFileSync(mapPath, JSON.stringify(obj, null, 2));
     } catch { /* ignore */ }
 }
 
+export function getAllLidMappings(sessionId: string): Record<string, string> {
+    const map = getLidMap(sessionId);
+    const obj: Record<string, string> = {};
+    for (const [lid, phone] of map) obj[lid] = phone;
+    return obj;
+}
+
+export function setLidMapping(sessionId: string, lid: string, phone: string): void {
+    const cleanLid = lid.endsWith("@lid") ? lid : `${lid}@lid`;
+    const cleanPhone = phone.endsWith("@s.whatsapp.net") ? phone : `${phone.replace(/\D/g, "")}@s.whatsapp.net`;
+    const map = getLidMap(sessionId);
+    if (map.get(cleanLid) !== cleanPhone) {
+        map.set(cleanLid, cleanPhone);
+        saveLidMap(sessionId);
+    }
+}
+
 /**
- * Resolve a JID to a phone-based JID.
- * - If already @s.whatsapp.net, return as-is with extracted phone digits
- * - If @lid, check the session's LID map first, then try sock.store and jidNormalizedUser
+ * Resolve a JID to a phone-based JID and clean digits.
+ * Multi-tier resolution strategy:
+ * 1. Direct phone JID (@s.whatsapp.net)
+ * 2. Alt fields (remoteJidAlt / participantAlt) if provided by Baileys v7+
+ * 3. Session's persistent lidmap.json and in-memory cache
+ * 4. Baileys Signal Repository lidMapping lookup (sock.signalRepository.lidMapping)
+ * 5. Baileys contact store (sock.store.contacts)
+ * 6. jidNormalizedUser fallback
  */
-function resolveJid(
+export function resolveJid(
     sock: WASocket,
     rawJid: string,
-    sessionId?: string
+    sessionId?: string,
+    altJid?: string
 ): { resolvedJid: string; phoneNumber: string | null } {
+    if (!rawJid) return { resolvedJid: "", phoneNumber: null };
+
+    // 1. Direct phone JID
     if (rawJid.endsWith("@s.whatsapp.net")) {
         const phone = rawJid.replace("@s.whatsapp.net", "");
         return { resolvedJid: rawJid, phoneNumber: phone };
     }
 
-    if (rawJid.endsWith("@lid")) {
-        // Priority 1: check our LID map (populated from contacts.upsert)
+    // 2. Check if altJid is provided and is a valid phone JID
+    if (altJid && altJid.endsWith("@s.whatsapp.net")) {
+        const phone = altJid.replace("@s.whatsapp.net", "");
+        if (sessionId && (rawJid.endsWith("@lid") || isLidUser(rawJid))) {
+            setLidMapping(sessionId, rawJid, altJid);
+            console.log(`[JID] Resolved & learned LID ${rawJid} → ${altJid} (from Alt field)`);
+        }
+        return { resolvedJid: altJid, phoneNumber: phone };
+    }
+
+    // 3. LID Resolution
+    if (rawJid.endsWith("@lid") || isLidUser(rawJid)) {
+        // Priority 1: Check session's persistent LID map
         if (sessionId) {
             const lidMap = getLidMap(sessionId);
             const mapped = lidMap.get(rawJid);
             if (mapped) {
                 const phone = mapped.replace("@s.whatsapp.net", "");
-                console.log(`[JID] Resolved LID ${rawJid} → ${mapped} (from lidmap)`);
                 return { resolvedJid: mapped, phoneNumber: phone };
             }
         }
 
-        // Priority 2: try sock.store.contacts
+        // Priority 2: Check Baileys native signalRepository lidMapping (Baileys v7+ / internal signal store)
+        try {
+            const signalRepo = (sock as any).signalRepository;
+            if (signalRepo?.lidMapping) {
+                const pn = typeof signalRepo.lidMapping.getPNForLID === "function"
+                    ? signalRepo.lidMapping.getPNForLID(rawJid)
+                    : null;
+                if (pn && typeof pn === "string" && pn.endsWith("@s.whatsapp.net")) {
+                    const phone = pn.replace("@s.whatsapp.net", "");
+                    if (sessionId) setLidMapping(sessionId, rawJid, pn);
+                    console.log(`[JID] Resolved LID ${rawJid} → ${pn} (from signalRepository.lidMapping)`);
+                    return { resolvedJid: pn, phoneNumber: phone };
+                }
+            }
+        } catch { /* ignore */ }
+
+        // Priority 3: Try sock.store.contacts
         try {
             const store = (sock as any).store;
             if (store?.contacts) {
                 const contact = store.contacts[rawJid];
                 if (contact?.id && contact.id.endsWith("@s.whatsapp.net")) {
                     const phone = contact.id.replace("@s.whatsapp.net", "");
-                    console.log(`[JID] Resolved LID ${rawJid} → ${contact.id}`);
+                    if (sessionId) setLidMapping(sessionId, rawJid, contact.id);
+                    console.log(`[JID] Resolved LID ${rawJid} → ${contact.id} (from store.contacts)`);
                     return { resolvedJid: contact.id, phoneNumber: phone };
                 }
             }
 
-            // Priority 3: try jidNormalizedUser
+            // Priority 4: Try jidNormalizedUser
             const normalized = jidNormalizedUser(rawJid);
             if (normalized && normalized !== rawJid && normalized.endsWith("@s.whatsapp.net")) {
                 const phone = normalized.replace("@s.whatsapp.net", "");
+                if (sessionId) setLidMapping(sessionId, rawJid, normalized);
                 console.log(`[JID] Normalized LID ${rawJid} → ${normalized}`);
                 return { resolvedJid: normalized, phoneNumber: phone };
             }
@@ -386,13 +442,16 @@ export async function startSession(
             const rawJid = msg.key.remoteJid || "";
             if (rawJid.endsWith("@g.us")) continue;
 
-            let { resolvedJid: from, phoneNumber } = resolveJid(sock, rawJid, sessionId);
+            // Extract protocol Alt fields (remoteJidAlt / participantAlt) if available
+            const rawAlt = (msg.key as any).remoteJidAlt || (msg.key as any).participantAlt;
+            let { resolvedJid: from, phoneNumber } = resolveJid(sock, rawJid, sessionId, rawAlt);
 
             // Fallback for @lid: try resolving phone number from participant
-            if (!phoneNumber && rawJid.includes("@lid") && msg.key.participant) {
+            if (!phoneNumber && (rawJid.includes("@lid") || isLidUser(rawJid)) && msg.key.participant) {
                 const participantJid = msg.key.participant;
                 if (participantJid.endsWith("@s.whatsapp.net")) {
                     phoneNumber = participantJid.replace("@s.whatsapp.net", "");
+                    setLidMapping(sessionId, rawJid, participantJid);
                     console.log(`[JID] Resolved phone from participant for LID ${rawJid} → ${phoneNumber}`);
                 }
             }
@@ -441,6 +500,15 @@ export async function startSession(
 
             const timestamp = new Date((msg.messageTimestamp as number) * 1000).toISOString();
 
+            const messageKeyPayload = {
+                remoteJid: msg.key.remoteJid || undefined,
+                remoteJidAlt: (msg.key as any).remoteJidAlt || undefined,
+                id: msg.key.id || undefined,
+                fromMe: msg.key.fromMe || undefined,
+                participant: msg.key.participant || undefined,
+                participantAlt: (msg.key as any).participantAlt || undefined,
+            };
+
             if (msg.key.fromMe) {
                 await sendWebhook({
                     session_id: sessionId,
@@ -451,7 +519,7 @@ export async function startSession(
                     message_type: messageType,
                     direction: "outbound",
                     ai_generated: false,
-                    message_key: { remoteJid: msg.key.remoteJid || undefined, id: msg.key.id || undefined, fromMe: msg.key.fromMe || undefined },
+                    message_key: messageKeyPayload,
                     ...(imageBase64 && { image_base64: imageBase64 }),
                 });
                 continue;
@@ -465,7 +533,7 @@ export async function startSession(
                 timestamp,
                 message_type: messageType,
                 direction: "inbound",
-                message_key: { remoteJid: msg.key.remoteJid || undefined, id: msg.key.id || undefined, fromMe: msg.key.fromMe || undefined },
+                message_key: messageKeyPayload,
                 ...(imageBase64 && { image_base64: imageBase64 }),
             });
         }
@@ -572,7 +640,13 @@ export async function sendMessage(
         throw new Error("Session not connected");
     }
     try {
-        await session.socket.sendMessage(to, { text: message });
+        // Normalize recipient JID (support plain digits, @s.whatsapp.net, or @lid)
+        let targetJid = to.trim();
+        if (!targetJid.includes("@")) {
+            targetJid = `${targetJid.replace(/\D/g, "")}@s.whatsapp.net`;
+        }
+
+        await session.socket.sendMessage(targetJid, { text: message });
         session.lastActive = new Date().toISOString();
         return true;
     } catch (err) {
@@ -591,7 +665,12 @@ export async function sendPresence(
         throw new Error("Session not connected");
     }
     try {
-        await session.socket.sendPresenceUpdate(presence, to);
+        let targetJid = to.trim();
+        if (!targetJid.includes("@")) {
+            targetJid = `${targetJid.replace(/\D/g, "")}@s.whatsapp.net`;
+        }
+
+        await session.socket.sendPresenceUpdate(presence, targetJid);
         session.lastActive = new Date().toISOString();
         return true;
     } catch (err) {
@@ -602,7 +681,14 @@ export async function sendPresence(
 
 export async function sendRead(
     sessionId: string,
-    messageKey: { remoteJid?: string; id?: string; fromMe?: boolean; participant?: string }
+    messageKey: {
+        remoteJid?: string;
+        remoteJidAlt?: string;
+        id?: string;
+        fromMe?: boolean;
+        participant?: string;
+        participantAlt?: string;
+    }
 ): Promise<boolean> {
     const session = getSession(sessionId);
     if (!session.connected || !session.socket) {

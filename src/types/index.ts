@@ -22,14 +22,17 @@ export interface WebhookPayload {
     image_base64?: string;               // base64-encoded image data (no data URI prefix)
     message_key?: {                      // raw Baileys message key for read receipts
         remoteJid?: string;
+        remoteJidAlt?: string;
         id?: string;
         fromMe?: boolean;
+        participant?: string;
+        participantAlt?: string;
     };
 }
 
 export interface SendMessageRequest {
     sessionId: string;
-    to: string;              // recipient WhatsApp JID
+    to: string;              // recipient WhatsApp JID or LID
     message: string;
 }
 
@@ -57,8 +60,15 @@ export interface SendReadRequest {
     to: string;
     messageKey: {
         remoteJid?: string;
+        remoteJidAlt?: string;
         id?: string;
         fromMe?: boolean;
         participant?: string;
+        participantAlt?: string;
     };
+}
+
+export interface SetLidMappingRequest {
+    lid: string;             // e.g. "37619769577647@lid" or "37619769577647"
+    phoneNumber: string;     // e.g. "8801533021652" or "8801533021652@s.whatsapp.net"
 }
